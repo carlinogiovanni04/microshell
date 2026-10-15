@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - "-DBASE_IMPLEMENTATION"
+    - "-I/home/giovanni/Code/microshell/include"
+    - "-Wall"
+    - "-Wextra"
+    - "-Wpedantic"
+    - "-Werror"
