@@ -1,5 +1,16 @@
+#!/bin/sh
+
+cd "$(dirname "$0")"
 mkdir -p bin
 
-clang -DBASE_IMPLEMENTATION -g -O0 -Iinclude -Wall -Wextra -Wpedantic -Werror src/main.c -o bin/microshell
+# Optional instrumentation:  ./build.sh profile
+profile_flags=""
+for arg in "$@"; do
+    if [ "$arg" = "profile" ]; then
+        profile_flags="-DMICROSHELL_PROFILE -I../microprof/include"
+    fi
+done
 
-x86_64-w64-mingw32-gcc -DBASE_IMPLEMENTATION -g -O0 -Iinclude -Wall -Wextra -Wpedantic -Werror src/main.c -o bin/microshell.exe
+clang -DBASE_IMPLEMENTATION -g -O0 -Iinclude $profile_flags -Wall -Wextra -Werror src/main.c -o bin/microshell
+
+x86_64-w64-mingw32-gcc -DBASE_IMPLEMENTATION -g -O0 -Iinclude $profile_flags -Wall -Wextra -Werror src/main.c -o bin/microshell.exe
