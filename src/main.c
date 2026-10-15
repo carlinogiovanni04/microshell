@@ -42,7 +42,7 @@ static void ls_print_entry(const DirEntry* e, void* user) {
     PROF_FUNCTION() {
         (void)user;
 
-        base_cstr_printf("%d %s\n", (i32)e->size, e->name);
+        base_cstr_printf("%d \t %s\n", (i32)e->size, e->name);
     }
 }
 
