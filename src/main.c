@@ -31,6 +31,19 @@ void cmd_exit(const char *args, b32 *running) {
   }
 }
 
+void cmd_exec(const char *args, b32 *running) {
+  PROF_FUNCTION() {
+    (void)running;
+    if (args[0] == '\0') {
+      base_cstr_printf("exec: no command provided\n");
+      return;
+    }
+
+    base_cstr_printf("exec: executing '%s'\n", args);
+    sys_exec_command(args);
+  }
+}
+
 void cmd_print(const char *args, b32 *running) {
   PROF_FUNCTION() {
     (void)running;
@@ -63,6 +76,7 @@ void cmd_help(const char *args, b32 *running) {
     base_cstr_printf("Available commands:\n");
     base_cstr_printf("  print [text] - Print text to the screen\n");
     base_cstr_printf("  ls           - List files and directories\n");
+    base_cstr_printf("  exec [cmd]   - Execute a command\n");
     base_cstr_printf("  help         - Display this help menu\n");
     base_cstr_printf("  exit         - Exit the shell\n");
   }
@@ -71,7 +85,8 @@ void cmd_help(const char *args, b32 *running) {
 Command commands[] = {{"exit", cmd_exit, "Exits the shell"},
                       {"print", cmd_print, "Prints arguments"},
                       {"help", cmd_help, "Shows help menu"},
-                      {"ls", cmd_ls, "Lists file and directories"}};
+                      {"ls", cmd_ls, "Lists file and directories"},
+                      {"exec", cmd_exec, "Executes a command"} };
 
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 

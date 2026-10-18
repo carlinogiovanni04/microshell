@@ -108,6 +108,14 @@ __declspec(dllimport) void *__stdcall FindFirstFileA(const char *lpFileName,
 __declspec(dllimport) i32 __stdcall FindNextFileA(void *hFindFile,
                                                   void *lpFindFileData);
 __declspec(dllimport) i32 __stdcall FindClose(void *hFindFile);
+__declspec(dllimport) i32 __stdcall CreateProcessA(const char *lpApplicationName,
+                                      char *lpCommandLine, void *lpProcessAttributes,
+                                      void *lpThreadAttributes, i32 bInheritHandles,
+                                      u32 dwCreationFlags, void *lpEnvironment,
+                                      const char *lpCurrentDirectory, void *lpStartupInfo,
+                                      void *lpProcessInformation);
+__declspec(dllimport) void *__stdcall malloc(size_t size);
+__declspec(dllimport) void __stdcall free(void *memblock);
 #else
 __attribute__((dllimport)) void *__stdcall
 GetStdHandle(unsigned long nStdHandle);
@@ -124,7 +132,57 @@ FindFirstFileA(const char *lpFileName, void *lpFindFileData);
 __attribute__((dllimport)) i32 __stdcall FindNextFileA(void *hFindFile,
                                                        void *lpFindFileData);
 __attribute__((dllimport)) i32 __stdcall FindClose(void *hFindFile);
+__attribute__((dllimport)) i32 __stdcall CreateProcessA(
+    const char *lpApplicationName, char *lpCommandLine, void *lpProcessAttributes,
+    void *lpThreadAttributes, i32 bInheritHandles, u32 dwCreationFlags,
+    void *lpEnvironment, const char *lpCurrentDirectory, void *lpStartupInfo,
+    void *lpProcessInformation);
 #endif
+
+void *sys_alloc(usize size)
+{
+#ifdef _MSC_VER
+  return malloc(size);
+#else
+  void *ptr = NULL;
+  if (posix_memalign(&ptr, 16, size) != 0)
+
+    return NULL;
+  return ptr;
+#endif
+}
+void sys_free(void *ptr){
+#ifdef _MSC_VER
+  free(ptr);
+#else
+  free(ptr);
+#endif
+}
+
+header_implementation b32 sys_exec_command(const char *cmd) {
+  char cmd_copy[512];
+  usize i = 0;
+  while (cmd[i] != '\0' && i < sizeof(cmd_copy) - 1) {
+    cmd_copy[i] = cmd[i];
+    i++;
+  }
+  cmd_copy[i] = '\0';
+
+  void *startup_info = sys_alloc(104); // STARTUPINFOA size
+  void *process_info = sys_alloc(24);   // PROCESS_INFORMATION size
+  for (usize j = 0; j < 104; j++)
+    ((u8 *)startup_info)[j] = 0;
+  for (usize j = 0; j < 24; j++)
+    ((u8 *)process_info)[j] = 0;
+
+  ((u32 *)startup_info)[0] = 104; // cb
+  if (!CreateProcessA(NULL, cmd_copy, NULL, NULL, false, 0, NULL, NULL,
+                      startup_info, process_info)) {
+    return false;
+  }
+
+  return true;
+}
 
 header_implementation void sys_print_char(char c) {
   void *stdout_handle = GetStdHandle(SHARED_STD_OUTPUT_HANDLE);
