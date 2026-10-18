@@ -1,8 +1,8 @@
 CompileFlags:
   Add:
     - "-DBASE_IMPLEMENTATION"
-    - "-I/home/giovanni/Code/microshell/include"
-    - "-I/home/giovanni/Code/microprof/include"
+    - "-ID:/code/microshell/include"
+    - "-ID:/code/microprof/include"
     - "-Wall"
     - "-Wextra"
     - "-Werror"
