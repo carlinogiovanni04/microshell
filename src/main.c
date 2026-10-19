@@ -98,44 +98,51 @@ int main(void) {
     PROF_SCOPE("shell.frame") {
       base_cstr_printf("> ");
 
-      PROF_SCOPE("shell.read") { base_cstr_readline(input, MAX_INPUT_SIZE); }
-
-      if (input[0] == '\0') {
-        continue;
+      PROF_SCOPE("shell.read") {
+        u64 len = base_cstr_readline(input, MAX_INPUT_SIZE);
+        if (len == (u64)-1) {
+          running = false; // end of input
+        }
       }
 
-      char *cmd_name = input;
-      char *args = input;
+      if (!running) {
+        // Nothing left to read: leave the frame.
+      } else if (input[0] == '\0') {
+        continue;
+      } else {
+        char *cmd_name = input;
+        char *args = input;
 
-      PROF_SCOPE("shell.parse") {
-        while (*args != '\0' && *args != ' ' && *args != '\t') {
-          args++;
-        }
-
-        if (*args != '\0') {
-          *args = '\0';
-          args++; // Move past the space
-          while (*args == ' ' || *args == '\t') {
+        PROF_SCOPE("shell.parse") {
+          while (*args != '\0' && *args != ' ' && *args != '\t') {
             args++;
           }
-        }
-      }
 
-      b32 found = false;
-      PROF_SCOPE("shell.dispatch") {
-        for (usize i = 0; i < COMMAND_COUNT; i++) {
-          if (base_cstr_compare(cmd_name, commands[i].name) == 0) {
-            commands[i].func(args, &running);
-            found = true;
-            break;
+          if (*args != '\0') {
+            *args = '\0';
+            args++; // Move past the space
+            while (*args == ' ' || *args == '\t') {
+              args++;
+            }
           }
         }
-      }
 
-      if (!found) {
-        base_cstr_printf(
-            "Unknown command: %s. Type 'help' for a list of commands.\n",
-            cmd_name);
+        b32 found = false;
+        PROF_SCOPE("shell.dispatch") {
+          for (usize i = 0; i < COMMAND_COUNT; i++) {
+            if (base_cstr_compare(cmd_name, commands[i].name) == 0) {
+              commands[i].func(args, &running);
+              found = true;
+              break;
+            }
+          }
+        }
+
+        if (!found) {
+          base_cstr_printf(
+              "Unknown command: %s. Type 'help' for a list of commands.\n",
+              cmd_name);
+        }
       }
     }
     prof_frame_end();

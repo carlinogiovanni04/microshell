@@ -43,6 +43,10 @@ typedef i32 b32;
 #define true 1
 #define false 0
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 #define header_implementation static inline
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -85,6 +89,9 @@ typedef void (*DirEntryFn)(const DirEntry *entry, void *user);
 
 header_implementation b32 sys_dir_foreach(const char *path, DirEntryFn fn,
                                           void *user);
+
+/* Forward declarations of helpers defined further down the file. */
+header_implementation u64 base_cstr_length(const char *cstr);
 
 #if defined(_WIN32) || defined(_WIN64)
 
@@ -268,26 +275,21 @@ header_implementation b32 sys_dir_foreach(const char *path, DirEntryFn fn,
 
 #elif defined(__linux__) && (defined(__x86_64__) || defined(_M_X64))
 
-header_implementation void sys_print_char(char c) {
-  long syscall_number = 1;
-  long fd = 1;
-  long len = 1;
-
-  __asm__ volatile("syscall\n"
-                   :
-                   : "a"(syscall_number), "D"(fd), "S"(&c), "d"(len)
+header_implementation ssize_t sys_write(i32 fd, const void *buf, size_t count) {
+  ssize_t ret;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)1), "D"((i64)fd), "S"(buf), "d"((i64)count)
                    : "rcx", "r11", "memory");
+  return ret;
+}
+
+header_implementation void sys_print_char(char c) {
+  sys_write(1, &c, 1);
 }
 
 header_implementation void sys_print_prompt(char c) {
-  long syscall_number = 1;
-  long fd = 2;
-  long len = 1;
-
-  __asm__ volatile("syscall\n"
-                   :
-                   : "a"(syscall_number), "D"(fd), "S"(&c), "d"(len)
-                   : "rcx", "r11", "memory");
+  sys_write(2, &c, 1);
 }
 
 header_implementation ssize_t sys_read(i32 fd, void *buf, size_t count) {
@@ -411,6 +413,366 @@ header_implementation b32 sys_dir_foreach(const char *path, DirEntryFn fn,
   }
   sys_close(fd);
   return true;
+}
+
+/* --- Process launching ---------------------------------------------------- */
+
+#define O_CLOEXEC 02000000
+#define X_OK 1
+#define AT_FDCWD (-100)
+
+#define EXEC_CMD_MAX 1024
+#define EXEC_PATH_MAX 1024
+#define EXEC_MAX_ARGS 64
+
+/* The environment of the current process, provided by the C runtime. */
+extern char **environ;
+
+header_implementation i64 sys_fork(void) {
+  i64 ret;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)57)
+                   : "rcx", "r11", "memory");
+  return ret;
+}
+
+header_implementation i64 sys_execve(const char *path, char *const argv[],
+                                     char *const envp[]) {
+  i64 ret;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)59), "D"(path), "S"(argv), "d"(envp)
+                   : "rcx", "r11", "memory");
+  return ret;
+}
+
+header_implementation i64 sys_wait4(i32 pid, i32 *status, i32 options,
+                                    void *rusage) {
+  i64 ret;
+  register i64 r10 __asm__("r10") = (i64)rusage;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)61), "D"((i64)pid), "S"(status), "d"((i64)options),
+                     "r"(r10)
+                   : "rcx", "r11", "memory");
+  return ret;
+}
+
+header_implementation i32 sys_pipe2(i32 *fds, i32 flags) {
+  i64 ret;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)293), "D"(fds), "S"((i64)flags)
+                   : "rcx", "r11", "memory");
+  return (i32)ret;
+}
+
+header_implementation i32 sys_access(const char *path, i32 mode) {
+  i64 ret;
+  __asm__ volatile("syscall"
+                   : "=a"(ret)
+                   : "a"((i64)21), "D"(path), "S"((i64)mode)
+                   : "rcx", "r11", "memory");
+  return (i32)ret;
+}
+
+header_implementation void sys_exit_group(i32 code) {
+  __asm__ volatile("syscall"
+                   :
+                   : "a"((i64)231), "D"((i64)code)
+                   : "rcx", "r11", "memory");
+  __builtin_unreachable();
+}
+
+header_implementation void sys_write_str(i32 fd, const char *s) {
+  sys_write(fd, s, base_cstr_length(s));
+}
+
+header_implementation const char *exec_errno_message(i32 err) {
+  switch (err) {
+  case 1:
+    return "Operation not permitted";
+  case 2:
+    return "No such file or directory";
+  case 8:
+    return "Exec format error";
+  case 12:
+    return "Cannot allocate memory";
+  case 13:
+    return "Permission denied";
+  case 14:
+    return "Bad address";
+  case 20:
+    return "Not a directory";
+  case 21:
+    return "Is a directory";
+  case 23:
+    return "Too many open files in system";
+  case 24:
+    return "Too many open files";
+  case 26:
+    return "Text file busy";
+  case 36:
+    return "File name too long";
+  case 40:
+    return "Too many levels of symbolic links";
+  default:
+    return "Unknown error";
+  }
+}
+
+header_implementation b32 exec_is_space(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+
+/*
+ * Splits a command line into an argv array. Single quotes, double quotes and
+ * backslash escapes are honored. The tokens are written back into `scratch`
+ * (compacted in place), so `argv` points into that buffer.
+ */
+header_implementation b32 exec_split_args(const char *cmd, char *scratch,
+                                          usize scratch_size, char **argv,
+                                          usize max_args, usize *out_count) {
+  usize len = base_cstr_length(cmd);
+  if (len + 1 > scratch_size)
+    return false;
+
+  for (usize i = 0; i <= len; i++)
+    scratch[i] = cmd[i];
+
+  usize read = 0;
+  usize write = 0;
+  usize count = 0;
+
+  while (read < len) {
+    while (read < len && exec_is_space(scratch[read]))
+      read++;
+    if (read >= len)
+      break;
+    if (count >= max_args)
+      return false;
+
+    char *token = scratch + write;
+    usize token_len = 0;
+
+    while (read < len && !exec_is_space(scratch[read])) {
+      char c = scratch[read];
+
+      if (c == '\'') {
+        read++;
+        while (read < len && scratch[read] != '\'')
+          token[token_len++] = scratch[read++];
+        if (read >= len)
+          return false; // unterminated quote
+        read++;
+        continue;
+      }
+
+      if (c == '"') {
+        read++;
+        while (read < len && scratch[read] != '"') {
+          if (scratch[read] == '\\' && read + 1 < len) {
+            char escaped = scratch[read + 1];
+            if (escaped == '"' || escaped == '\\' || escaped == '$' ||
+                escaped == '`') {
+              token[token_len++] = escaped;
+            } else {
+              token[token_len++] = '\\';
+              token[token_len++] = escaped;
+            }
+            read += 2;
+            continue;
+          }
+          token[token_len++] = scratch[read++];
+        }
+        if (read >= len)
+          return false; // unterminated quote
+        read++;
+        continue;
+      }
+
+      if (c == '\\' && read + 1 < len) {
+        read++;
+        token[token_len++] = scratch[read++];
+        continue;
+      }
+
+      token[token_len++] = c;
+      read++;
+    }
+
+    /* Consume the separator before writing the terminator so that the
+     * compacted output never overwrites input that is still unread. */
+    if (read < len)
+      read++;
+
+    token[token_len] = '\0';
+    write += token_len + 1;
+    argv[count++] = token;
+  }
+
+  argv[count] = NULL;
+  *out_count = count;
+  return true;
+}
+
+header_implementation const char *exec_env_get(const char *name) {
+  usize name_len = base_cstr_length(name);
+  for (char **entry = environ; entry && *entry; entry++) {
+    const char *e = *entry;
+    usize i = 0;
+    while (i < name_len && e[i] == name[i])
+      i++;
+    if (i == name_len && e[i] == '=')
+      return e + name_len + 1;
+  }
+  return NULL;
+}
+
+header_implementation b32 exec_is_executable(const char *path) {
+  SysStat st = {0};
+  if (sys_fstatat(AT_FDCWD, path, &st, 0) != 0)
+    return false;
+  if ((st.st_mode & S_IFMT) != S_IFREG)
+    return false;
+  return sys_access(path, X_OK) == 0;
+}
+
+/*
+ * Resolves a program name to a full path. Names containing a '/' are used
+ * as-is, everything else is looked up in PATH.
+ */
+header_implementation b32 exec_resolve_program(const char *program, char *out,
+                                               usize out_size) {
+  usize prog_len = base_cstr_length(program);
+  if (prog_len == 0)
+    return false;
+
+  for (usize i = 0; i < prog_len; i++) {
+    if (program[i] == '/') {
+      if (prog_len + 1 > out_size)
+        return false;
+      for (usize j = 0; j <= prog_len; j++)
+        out[j] = program[j];
+      return true;
+    }
+  }
+
+  const char *path = exec_env_get("PATH");
+  if (!path)
+    path = "/usr/local/bin:/usr/bin:/bin";
+
+  const char *cursor = path;
+  while (*cursor != '\0') {
+    const char *sep = cursor;
+    while (*sep != '\0' && *sep != ':')
+      sep++;
+    usize dir_len = (usize)(sep - cursor);
+
+    if (dir_len + 1 + prog_len + 1 > out_size)
+      return false;
+
+    /* An empty path component means the current directory. */
+    usize w = 0;
+    if (dir_len == 0) {
+      out[w++] = '.';
+    } else {
+      for (usize i = 0; i < dir_len; i++)
+        out[w++] = cursor[i];
+    }
+    out[w++] = '/';
+    for (usize i = 0; i < prog_len; i++)
+      out[w++] = program[i];
+    out[w] = '\0';
+
+    if (exec_is_executable(out))
+      return true;
+
+    if (*sep == '\0')
+      break;
+    cursor = sep + 1;
+  }
+
+  return false;
+}
+
+/*
+ * Runs a command line in a child process and waits for it to finish.
+ * Returns false if the program could not be launched.
+ */
+header_implementation b32 sys_exec_command(const char *cmd) {
+  if (cmd == NULL || cmd[0] == '\0')
+    return false;
+
+  char scratch[EXEC_CMD_MAX];
+  char *argv[EXEC_MAX_ARGS + 1];
+  usize argc = 0;
+
+  if (!exec_split_args(cmd, scratch, sizeof scratch, argv, EXEC_MAX_ARGS,
+                        &argc)) {
+    sys_write_str(2, "exec: invalid command line\n");
+    return false;
+  }
+  if (argc == 0)
+    return false;
+
+  char program[EXEC_PATH_MAX];
+  if (!exec_resolve_program(argv[0], program, sizeof program)) {
+    sys_write_str(2, "exec: '");
+    sys_write_str(2, cmd);
+    sys_write_str(2, "': command not found\n");
+    return false;
+  }
+
+  /*
+   * A close-on-exec pipe reports a failed exec back to the parent: the pipe
+   * is closed automatically when the program starts, so anything readable
+   * afterwards is the errno of a failed exec.
+   */
+  i32 pipe_fds[2];
+  if (sys_pipe2(pipe_fds, O_CLOEXEC) != 0) {
+    sys_write_str(2, "exec: could not create pipe\n");
+    return false;
+  }
+
+  i64 pid = sys_fork();
+  if (pid < 0) {
+    sys_close(pipe_fds[0]);
+    sys_close(pipe_fds[1]);
+    sys_write_str(2, "exec: fork failed\n");
+    return false;
+  }
+
+  if (pid == 0) {
+    /* Child: replace this process image with the requested program. */
+    sys_close(pipe_fds[0]);
+    i64 result = sys_execve(program, argv, (char *const *)environ);
+    i32 err = (i32)(-result);
+    sys_write(pipe_fds[1], &err, sizeof err);
+    sys_exit_group(127);
+  }
+
+  /* Parent: collect the exec result, then wait for the child to finish. */
+  sys_close(pipe_fds[1]);
+  i32 err = 0;
+  ssize_t n = sys_read(pipe_fds[0], &err, sizeof err);
+  sys_close(pipe_fds[0]);
+
+  b32 success = true;
+  if (n == (ssize_t)sizeof err) {
+    success = false;
+    sys_write_str(2, "exec: '");
+    sys_write_str(2, cmd);
+    sys_write_str(2, "': ");
+    sys_write_str(2, exec_errno_message(err));
+    sys_write_str(2, "\n");
+  }
+
+  i32 status = 0;
+  sys_wait4((i32)pid, &status, 0, NULL);
+  return success;
 }
 
 #else
@@ -721,7 +1083,12 @@ header_implementation u64 base_cstr_readline(char *buffer, u64 max_size) {
   u64 i = 0;
   while (i < max_size - 1) {
     i32 c = base_get_char();
-    if (c == -1 || c == '\n') {
+    if (c == -1) {
+      buffer[i] = '\0';
+      /* End of input: report it when nothing was read at all. */
+      return (i == 0) ? (u64)-1 : i;
+    }
+    if (c == '\n') {
       break;
     }
     if (c == '\r') {
